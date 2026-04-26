@@ -1,0 +1,47 @@
+# Dependencies
+node_modules/
+.npm-cache/
+# Build output
+dist/
+
+# Local data & auth
+store/
+data/
+logs/
+
+# Groups - only track base structure and AGENT.md
+groups/*
+!groups/main/
+!groups/global/
+groups/main/*
+groups/global/*
+!groups/main/AGENT.md
+!groups/global/AGENT.md
+
+# Personality files are per-installation
+PERSONALITY.md
+
+# Secrets
+*.keys.json
+vertex-service-account.json
+.env
+
+# Local Claude Code settings
+.claude/settings.local.json
+
+# OS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+
+# Skills system (local per-installation state)
+.nanoclaw/
+
+# SDK tarballs (built from local gemini-cli source)
+container/deps/*.tgz
+
+agents-sdk-docs
+*.pyc
+.venv/

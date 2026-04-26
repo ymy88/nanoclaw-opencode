@@ -1,0 +1,8 @@
+[project]
+name = "compact-history"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = ["google-genai"]
+
+[project.scripts]
+compact-history = "compact:main"

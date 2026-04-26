@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Write(tmp/*)",
+      "Bash(sqlite3:*)",
+      "Bash(docker ps:*)",
+      "Bash(pgrep:*)",
+      "Bash(git status:*)",
+      "Bash(ls:*)"
+    ]
+  }
+}

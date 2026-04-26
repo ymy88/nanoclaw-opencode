@@ -1,0 +1,15 @@
+{
+  "name": "nanoclaw-agent-runner",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Container-side agent runner for NanoClaw (OpenCode)",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "bun run src/index.ts"
+  },
+  "dependencies": {
+    "opencode": "file:./deps/opencode-1.4.11.tgz",
+    "cron-parser": "^5.0.0",
+    "zod": "^4.1.8"
+  }
+}

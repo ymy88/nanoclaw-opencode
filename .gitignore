@@ -1,0 +1,22 @@
+# Gemini CLI build artifacts
+gemini-cli/node_modules/
+gemini-cli/packages/*/dist/
+gemini-cli/packages/*/node_modules/
+
+# gbrain - cloned separately
+gbrain/
+
+# graphiti - cloned separately
+graphiti/
+
+# Local Claude Code settings
+.claude/settings.local.json
+
+# OS
+.DS_Store
+.zed
+
+qwen-code
+
+# OpenCode - used as dependency, not checked in
+opencode/
