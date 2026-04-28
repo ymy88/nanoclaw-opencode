@@ -136,7 +136,10 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   const cleanedText = data.text
                     .replace(/<internal>[\s\S]*?<\/internal>/g, '')
                     .trim();
-                  if (!cleanedText) break;
+                  if (!cleanedText) {
+                    fs.unlinkSync(filePath);
+                    continue;
+                  }
 
                   // Authorization: verify this group can send to this chatJid
                   const targetGroup = registeredGroups[data.chatJid];
