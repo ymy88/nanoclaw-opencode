@@ -9,14 +9,14 @@ store/
 data/
 logs/
 
-# Groups - only track base structure and AGENT.md
+# Groups - only track base structure and INSTRUCTIONS.md
 groups/*
 !groups/main/
 !groups/global/
 groups/main/*
 groups/global/*
-!groups/main/AGENT.md
-!groups/global/AGENT.md
+!groups/main/INSTRUCTIONS.md
+!groups/global/INSTRUCTIONS.md
 
 # Personality files are per-installation
 PERSONALITY.md

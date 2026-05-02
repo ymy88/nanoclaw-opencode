@@ -85,7 +85,7 @@ function loadFileWithFallback(filename: string): string {
 
 function loadInstructions(): string {
   const personality = loadFileWithFallback('PERSONALITY.md');
-  const agent = loadFileWithFallback('AGENT.md');
+  const agent = loadFileWithFallback('INSTRUCTIONS.md');
 
   const parts: string[] = [];
   if (personality) parts.push(personality);
@@ -219,14 +219,8 @@ async function main(): Promise<void> {
     /* ignore */
   }
 
-  // Write instructions as AGENTS.md for OpenCode to discover
+  // Load instructions for system prompt
   const instructions = loadInstructions();
-  if (instructions) {
-    const agentsMdPath = '/workspace/group/AGENTS.md';
-    if (!fs.existsSync(agentsMdPath)) {
-      fs.writeFileSync(agentsMdPath, instructions);
-    }
-  }
 
   // Write IPC context so the tool module can read it at import time
   const ipcContext: IpcContext = {
@@ -264,6 +258,11 @@ export const mcp__nanoclaw__register_group = tools.mcp__nanoclaw__register_group
   const configContent = {
     provider: {
       [providerID]: { enabled: true },
+    },
+    agent: {
+      build: {
+        prompt: instructions || 'You are an AI assistant. Use the tools available to you to help the user.',
+      },
     },
   };
   process.env.OPENCODE_CONFIG_CONTENT = JSON.stringify(configContent);
@@ -327,11 +326,14 @@ export const mcp__nanoclaw__register_group = tools.mcp__nanoclaw__register_group
   log(`Agent configured: provider=${providerID}, model=${modelID}, tools=9, instructions=${instructions.length} chars`);
 
   // Bootstrap OpenCode and run agent loop
+  log('Calling bootstrap()...');
   await bootstrap('/workspace/group', async () => {
+    log('Bootstrap callback entered');
     let sessionId = containerInput.sessionId;
 
     // Create or resume session
     if (!sessionId) {
+      log('Creating new session...');
       const session = await AppRuntime.runPromise(
         Session.Service.use((svc) => svc.create()),
       );
@@ -342,9 +344,11 @@ export const mcp__nanoclaw__register_group = tools.mcp__nanoclaw__register_group
     }
 
     // Query loop
+    let queryCount = 0;
     try {
       while (true) {
-        log(`Starting query (session: ${sessionId})...`);
+        queryCount++;
+        log(`Starting query #${queryCount} (session: ${sessionId})...`);
         log(`Prompt (${prompt.length} chars): ${prompt.slice(0, 200)}...`);
 
         let closedDuringQuery = false;
@@ -362,6 +366,8 @@ export const mcp__nanoclaw__register_group = tools.mcp__nanoclaw__register_group
         setTimeout(pollIpc, IPC_POLL_MS);
 
         // Send prompt via OpenCode
+        log(`Calling SessionPrompt.prompt()...`);
+        const promptStart = Date.now();
         const response = await AppRuntime.runPromise(
           SessionPrompt.Service.use((svc) =>
             svc.prompt({
@@ -371,6 +377,7 @@ export const mcp__nanoclaw__register_group = tools.mcp__nanoclaw__register_group
             }),
           ),
         );
+        log(`SessionPrompt.prompt() returned in ${Date.now() - promptStart}ms`);
 
         ipcPolling = false;
 
@@ -390,7 +397,7 @@ export const mcp__nanoclaw__register_group = tools.mcp__nanoclaw__register_group
         });
 
         if (closedDuringQuery) {
-          log('Close sentinel consumed during query, exiting');
+          log('Close sentinel consumed during query, breaking loop');
           break;
         }
 
@@ -398,13 +405,14 @@ export const mcp__nanoclaw__register_group = tools.mcp__nanoclaw__register_group
 
         log('Query ended, waiting for next IPC message...');
 
+        const waitStart = Date.now();
         const nextMessage = await waitForIpcMessage();
         if (nextMessage === null) {
-          log('Close sentinel received, exiting');
+          log(`Close sentinel received after ${Date.now() - waitStart}ms wait, breaking loop`);
           break;
         }
 
-        log(`Got new message (${nextMessage.length} chars), starting new query`);
+        log(`Got new message (${nextMessage.length} chars) after ${Date.now() - waitStart}ms wait`);
         prompt = prependTime(nextMessage);
       }
     } catch (err) {
@@ -418,7 +426,18 @@ export const mcp__nanoclaw__register_group = tools.mcp__nanoclaw__register_group
       });
       process.exit(1);
     }
+
+    log(`Loop exited after ${queryCount} queries, returning from bootstrap callback`);
   });
+
+  log('bootstrap() returned, main() completing');
 }
 
-main();
+log('Calling main()...');
+main().then(() => {
+  log('main() resolved, exiting');
+  process.exit(0);
+}).catch((err) => {
+  log(`main() rejected: ${err}`);
+  process.exit(1);
+});

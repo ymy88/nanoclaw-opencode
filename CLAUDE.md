@@ -19,7 +19,7 @@ Each project has its own dependencies and build system. Always `cd` into the cor
 
 ## NanoClaw (`nanoclaw/`)
 
-Single Bun process that connects to Slack/WhatsApp, routes messages to OpenCode running in isolated containers. Each group gets its own container, filesystem, and instructions (`groups/{name}/AGENT.md` + `groups/{name}/PERSONALITY.md`).
+Single Bun process that connects to Slack/WhatsApp, routes messages to OpenCode running in isolated containers. Each group gets its own container, filesystem, and instructions (`groups/{name}/INSTRUCTIONS.md` + `groups/{name}/PERSONALITY.md`).
 
 ### Commands
 

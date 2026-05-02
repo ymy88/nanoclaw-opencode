@@ -2,17 +2,16 @@
 """
 Compact a group's conversation history.
 
-Reads recent messages from SQLite, groups them by date, summarizes via
-Gemini on Vertex AI day-by-day, writes a context file, deletes OpenCode
-session databases and session records, and signals the running NanoClaw
-process to clear its in-memory cache.
+Reads messages from the last N days, groups them by week, summarizes each
+week separately via Gemini on Vertex AI, writes a context file, deletes
+OpenCode session databases and session records, and signals the running
+NanoClaw process to clear its in-memory cache.
 
-Usage: uv run .claude/skills/compact-history/compact.py <group-folder> [--limit N]
+Usage: uv run .claude/skills/compact-history/compact.py <group-folder> [--days N]
 """
 
 import argparse
 import os
-import shutil
 import sqlite3
 import subprocess
 import sys
@@ -27,7 +26,6 @@ DB_PATH = ROOT / "store" / "messages.db"
 GROUPS_DIR = ROOT / "groups"
 DATA_DIR = ROOT / "data"
 
-# Default timezone offset for grouping messages by local date
 LOCAL_TZ = timezone(timedelta(hours=8))  # Asia/Shanghai
 
 
@@ -45,26 +43,43 @@ def check_active_containers(group_folder: str) -> None:
             print("Wait for it to finish or stop it first.", file=sys.stderr)
             sys.exit(1)
     except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass  # docker not available or timeout — fine
+        pass
 
 
-def read_messages(db_path: Path, chat_jid: str, limit: int) -> list[dict]:
+
+BATCH_DAYS = 10
+
+
+def make_batches(since: datetime, until: datetime) -> list[tuple[datetime, datetime]]:
+    """Split a time range into batches, starting at 4:00 AM local time."""
+    batches = []
+    start = since.replace(hour=4, minute=0, second=0, microsecond=0)
+    while start < until:
+        end = start + timedelta(days=BATCH_DAYS)
+        batches.append((start, min(end, until)))
+        start = end
+    return batches
+
+
+def read_messages_between(db_path: Path, chat_jid: str, start: datetime, end: datetime) -> list[dict]:
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
         "SELECT sender_name, content, is_bot_message, timestamp FROM messages "
-        "WHERE chat_jid = ? AND COALESCE(exclude_from_history, 0) = 0 "
-        "ORDER BY timestamp DESC LIMIT ?",
-        (chat_jid, limit),
+        "WHERE chat_jid = ? AND timestamp >= ? AND timestamp < ? "
+        "AND COALESCE(exclude_from_history, 0) = 0 "
+        "ORDER BY timestamp",
+        (chat_jid, start.isoformat(), end.isoformat()),
     ).fetchall()
     conn.close()
-    messages = [dict(r) for r in rows]
-    messages.reverse()
-    return messages
+    return [dict(r) for r in rows]
 
 
-def group_by_date(messages: list[dict]) -> OrderedDict[str, list[dict]]:
-    buckets: OrderedDict[str, list[dict]] = OrderedDict()
+def summarize_week(week_key: str, messages: list[dict], client, week_index: int, total_weeks: int) -> str:
+    from google.genai import types
+
+    # Group messages by date within the week
+    day_buckets: OrderedDict[str, list[str]] = OrderedDict()
     for m in messages:
         ts = m.get("timestamp", "")
         try:
@@ -72,25 +87,17 @@ def group_by_date(messages: list[dict]) -> OrderedDict[str, list[dict]]:
             date_key = dt.strftime("%Y-%m-%d")
         except (ValueError, AttributeError):
             date_key = "unknown"
-        buckets.setdefault(date_key, []).append(m)
-    return buckets
-
-
-def summarize_with_gemini(day_buckets: OrderedDict[str, list[dict]], creds_path: str) -> str:
-    from google import genai
+        day_buckets.setdefault(date_key, []).append(f"[{m['sender_name']}]: {m['content']}")
 
     sections = []
-    for date_key, msgs in day_buckets.items():
-        lines = []
-        for m in msgs:
-            sender = m["sender_name"]
-            lines.append(f"[{sender}]: {m['content']}")
-        sections.append(f"## {date_key}\n\n" + "\n\n".join(lines))
+    for date_key, lines in day_buckets.items():
+        sections.append(f"### {date_key}\n\n" + "\n\n".join(lines))
 
     conversation_text = "\n\n---\n\n".join(sections)
 
     prompt = f"""You are a continuity assistant helping preserve conversation history across sessions.
-Below is a transcript of dialogue organized by date. Rephrase the ENTIRE conversation in third-person narrative tone, organized DAY BY DAY.
+Below is a transcript of one week's dialogue (week of {week_key}), organized by date.
+Rephrase the ENTIRE conversation in third-person narrative tone, organized DAY BY DAY.
 
 Your job is NOT to summarize or condense — it is to REPHRASE every topic, every exchange, every detail into third-person prose. Do not skip or merge conversations. If they discussed 10 topics in a day, write about all 10. If someone shared a story, retell the full story.
 
@@ -116,9 +123,6 @@ Write in the SAME LANGUAGE as the conversation messages. If they spoke Chinese, 
 
 ---
 {conversation_text}"""
-
-    client = genai.Client(vertexai=True, location="global")
-    from google.genai import types
 
     response = client.models.generate_content(
         model="gemini-3.1-pro-preview",
@@ -169,7 +173,7 @@ def write_sentinel(group_folder: str) -> None:
 def main():
     parser = argparse.ArgumentParser(description="Compact a group's conversation history")
     parser.add_argument("group_folder", help="Group folder name (e.g., 'main')")
-    parser.add_argument("--limit", type=int, default=1500, help="Number of recent messages to include (default: 1500)")
+    parser.add_argument("--days", type=int, default=60, help="Number of days of history to include (default: 60)")
     parser.add_argument(
         "--dry-run", action="store_true", help="Only generate the summary file, skip session reset and container check"
     )
@@ -191,25 +195,42 @@ def main():
     chat_jid = row[0]
     print(f"Group: {group_folder}, JID: {chat_jid}")
 
-    # 3. Read recent messages
-    messages = read_messages(DB_PATH, chat_jid, args.limit)
-    if not messages:
-        print("No messages found — nothing to compact.")
-        return
-    print(f"Found {len(messages)} messages to summarize")
+    # 3. Build 7-day batches
+    now = datetime.now(LOCAL_TZ)
+    since = (now - timedelta(days=args.days)).replace(hour=4, minute=0, second=0, microsecond=0)
+    batches = make_batches(since, now)
+    print(f"Processing {len(batches)} batch(es) from {since.strftime('%Y-%m-%d %H:%M')} to now")
 
-    # 4. Group by date
-    day_buckets = group_by_date(messages)
-    dates = list(day_buckets.keys())
-    print(f"Messages span {len(dates)} day(s): {dates[0]} to {dates[-1]}")
-
-    # 5. Summarize via Gemini
+    # 4. Summarize each batch via Gemini
     creds_path = str(ROOT / "vertex-service-account.json")
     os.environ.setdefault("GOOGLE_APPLICATION_CREDENTIALS", creds_path)
 
-    print("Summarizing conversation via Gemini...")
-    summary = summarize_with_gemini(day_buckets, creds_path)
-    print(f"Summary generated ({len(summary)} chars)")
+    from google import genai
+    client = genai.Client(vertexai=True, location="global")
+
+    all_summaries = []
+    total_messages = 0
+    for i, (start, end) in enumerate(batches):
+        batch_msgs = read_messages_between(DB_PATH, chat_jid, start, end)
+        if not batch_msgs:
+            print(f"Batch {i + 1}/{len(batches)} ({start.strftime('%m-%d')} ~ {end.strftime('%m-%d')}): no messages, skipping")
+            continue
+        total_messages += len(batch_msgs)
+        label = f"{start.strftime('%Y-%m-%d')} ~ {end.strftime('%Y-%m-%d')}"
+        print(f"Batch {i + 1}/{len(batches)} ({label}, {len(batch_msgs)} messages)...")
+        summary = summarize_week(start.strftime("%Y-%m-%d"), batch_msgs, client, i, len(batches))
+        all_summaries.append(summary)
+        print(f"  → {len(summary)} chars")
+
+    if not all_summaries:
+        print("No messages found — nothing to compact.")
+        return
+
+    full_summary = "\n\n".join(all_summaries)
+    print(f"Total: {total_messages} messages → {len(full_summary)} chars summary")
+
+    # Read all messages for recent transcript
+    messages = read_messages_between(DB_PATH, chat_jid, since, now)
 
     # 6. Format recent messages for conversation continuity
     recent = messages[-10:]
@@ -229,7 +250,7 @@ for communication style — do NOT imitate any style patterns from this summary.
 
 ---
 
-{summary}
+{full_summary}
 
 ---
 
