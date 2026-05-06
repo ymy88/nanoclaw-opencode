@@ -298,19 +298,21 @@ export class SlackChannel implements Channel {
       this.healthCheckTimer = null;
     }
 
-    const RECONNECT_DELAY = 5_000;
-    const MAX_RETRIES = 60; // 5 minutes total
+    const BASE_DELAY = 5_000;
+    const MAX_DELAY = 5 * 60_000; // cap at 5 minutes between retries
     let attempt = 0;
 
     const tryReconnect = async () => {
       attempt++;
-      logger.info({ attempt }, 'Attempting Slack reconnection');
+      const delay = Math.min(BASE_DELAY * Math.pow(2, attempt - 1), MAX_DELAY);
+      logger.info({ attempt, nextRetryMs: delay }, 'Attempting Slack reconnection');
       try {
         await this.app.stop();
       } catch {
         /* ignore stop errors */
       }
       try {
+        const CONNECT_TIMEOUT = 30_000;
         this.app = new App({
           token: this.botToken,
           appToken: this.appToken,
@@ -318,7 +320,12 @@ export class SlackChannel implements Channel {
           logLevel: LogLevel.ERROR,
         });
         this.setupEventHandlers();
-        await this.app.start();
+        await Promise.race([
+          this.app.start(),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('app.start() timed out')), CONNECT_TIMEOUT),
+          ),
+        ]);
         const auth = await this.app.client.auth.test();
         this.botUserId = auth.user_id as string;
         this.connected = true;
@@ -327,19 +334,12 @@ export class SlackChannel implements Channel {
         await this.flushOutgoingQueue();
         logger.info({ attempt }, 'Slack reconnected');
       } catch (err) {
-        if (attempt >= MAX_RETRIES) {
-          logger.error(
-            { err, attempt },
-            'Slack reconnection failed after max retries, exiting',
-          );
-          process.exit(1); // Let launchd restart the whole process
-        }
-        logger.warn({ err, attempt }, 'Slack reconnection failed, retrying');
-        setTimeout(tryReconnect, RECONNECT_DELAY);
+        logger.warn({ err, attempt, nextRetryMs: delay }, 'Slack reconnection failed, retrying');
+        setTimeout(tryReconnect, delay);
       }
     };
 
-    setTimeout(tryReconnect, RECONNECT_DELAY);
+    setTimeout(tryReconnect, BASE_DELAY);
   }
 
   async sendMessage(
