@@ -83,7 +83,7 @@ const COMPACT_HISTORY_PATTERN =
 function parseCompactHistoryCommand(content: string): number | null {
   const match = content.match(COMPACT_HISTORY_PATTERN);
   if (!match) return null;
-  return match[1] ? parseInt(match[1], 10) : 1500;
+  return match[1] ? parseInt(match[1], 10) : 60;
 }
 
 let lastTimestamp = '';
@@ -649,7 +649,7 @@ async function startMessageLoop(): Promise<void> {
                 skillDir,
                 'compact.py',
                 group.folder,
-                '--limit',
+                '--days',
                 String(limit),
               ],
               { cwd: skillDir, stdio: 'pipe' },

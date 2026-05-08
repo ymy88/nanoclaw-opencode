@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 When making code changes, always describe what the existing code does before proposing a fix. Don't jump to adding new code without first stating: "Line X does Y, so the fix is Z." If you can't point to the specific line, you haven't read enough yet.
 
+Never assume the situation. Never use words like "likely", "probably", "might be", "could be". For every statement you output, you must find evidence first — read the code, check the logs, verify the data. If you don't have evidence, say "I don't know" and go find it.
+
 ## Repository Structure
 
 | Directory | Project | Language | Purpose |
