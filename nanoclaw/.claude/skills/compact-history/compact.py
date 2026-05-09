@@ -65,6 +65,11 @@ def get_stored_summaries(db_path: Path, chat_jid: str, since_date: str | None = 
     return [dict(r) for r in rows]
 
 
+def local_to_utc_iso(dt: datetime) -> str:
+    """Convert a local datetime to UTC ISO string with Z suffix (matching DB format)."""
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
 def read_today_messages(db_path: Path, chat_jid: str) -> list[dict]:
     """Read messages from today (since 4:00 AM local)."""
     now = datetime.now(LOCAL_TZ)
@@ -78,7 +83,7 @@ def read_today_messages(db_path: Path, chat_jid: str) -> list[dict]:
         "SELECT sender_name, content, is_bot_message, timestamp FROM messages "
         "WHERE chat_jid = ? AND timestamp >= ? AND COALESCE(exclude_from_history, 0) = 0 "
         "ORDER BY timestamp",
-        (chat_jid, today_start.isoformat()),
+        (chat_jid, local_to_utc_iso(today_start)),
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -235,7 +240,11 @@ def main():
 
     # 4. Recent messages for continuity
     recent = read_recent_messages(DB_PATH, chat_jid, 10)
-    recent_lines = [f"[{m['sender_name']}]: {m['content']}" for m in recent]
+    def format_local_time(ts: str) -> str:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(LOCAL_TZ)
+        return dt.strftime("%Y-%m-%d %H:%M")
+
+    recent_lines = [f"[{format_local_time(m['timestamp'])} {m['sender_name']}]: {m['content']}" for m in recent]
     recent_transcript = "\n\n".join(recent_lines)
 
     # 5. Write context file

@@ -23,7 +23,7 @@ DB_PATH = ROOT / "store" / "messages.db"
 
 LOCAL_TZ = timezone(timedelta(hours=8))  # Asia/Shanghai
 DAY_START_HOUR = 4  # day boundary at 4:00 AM local
-BATCH_SIZE = 3  # days per Gemini API call
+BATCH_SIZE = 7  # days per Gemini API call
 
 
 def get_all_groups(db_path: Path) -> list[tuple[str, str]]:
@@ -55,8 +55,13 @@ def get_earliest_message_date(db_path: Path, chat_jid: str) -> str | None:
     return dt.strftime("%Y-%m-%d")
 
 
+def local_to_utc_iso(dt: datetime) -> str:
+    """Convert a local datetime to UTC ISO string with Z suffix (matching DB format)."""
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
 def read_messages_for_day(db_path: Path, chat_jid: str, date: str) -> list[dict]:
-    """Read messages for a logical day (4:00 AM to 4:00 AM next day)."""
+    """Read messages for a logical day (4:00 AM local to 4:00 AM next day local)."""
     day = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=LOCAL_TZ)
     start = day.replace(hour=DAY_START_HOUR, minute=0, second=0, microsecond=0)
     end = start + timedelta(days=1)
@@ -68,7 +73,7 @@ def read_messages_for_day(db_path: Path, chat_jid: str, date: str) -> list[dict]
         "WHERE chat_jid = ? AND timestamp >= ? AND timestamp < ? "
         "AND COALESCE(exclude_from_history, 0) = 0 "
         "ORDER BY timestamp",
-        (chat_jid, start.isoformat(), end.isoformat()),
+        (chat_jid, local_to_utc_iso(start), local_to_utc_iso(end)),
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -195,6 +200,12 @@ def save_summary(db_path: Path, chat_jid: str, date: str, summary: str, message_
 
 
 def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Daily conversation compaction")
+    parser.add_argument("group_folder", nargs="?", help="Only compact this group (e.g., 'main'). Omit to compact all groups.")
+    args = parser.parse_args()
+
     creds_path = str(ROOT / "vertex-service-account.json")
     os.environ.setdefault("GOOGLE_APPLICATION_CREDENTIALS", creds_path)
 
@@ -202,10 +213,18 @@ def main():
 
     client = genai.Client(vertexai=True, location="global")
 
-    groups = get_all_groups(DB_PATH)
-    if not groups:
+    all_groups = get_all_groups(DB_PATH)
+    if not all_groups:
         print("No registered groups found.")
         return
+
+    if args.group_folder:
+        groups = [(jid, folder) for jid, folder in all_groups if folder == args.group_folder]
+        if not groups:
+            print(f'Error: Group "{args.group_folder}" not found', file=sys.stderr)
+            sys.exit(1)
+    else:
+        groups = all_groups
 
     for jid, folder in groups:
         print(f"\n=== Group: {folder} (JID: {jid}) ===")
