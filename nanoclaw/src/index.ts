@@ -52,6 +52,7 @@ import {
   unsanitizeThreadKey,
 } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
+import { startHostTaskScheduler } from './host-tasks.js';
 import {
   findChannel,
   formatChannelContext,
@@ -487,6 +488,7 @@ async function startMessageLoop(): Promise<void> {
   }
   messageLoopRunning = true;
 
+  startHostTaskScheduler();
   logger.info(`NanoClaw running (trigger: @${ASSISTANT_NAME})`);
 
   while (true) {

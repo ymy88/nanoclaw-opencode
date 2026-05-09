@@ -198,6 +198,51 @@ function createSchema(database: Database): void {
   } catch {
     /* columns already exist */
   }
+
+  // Message summaries for daily compaction
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS message_summaries (
+      chat_jid TEXT NOT NULL,
+      date TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      message_count INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (chat_jid, date)
+    );
+  `);
+
+  // Host-side scheduled tasks (run on host, not in containers)
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS host_tasks (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      schedule TEXT NOT NULL,
+      command TEXT NOT NULL,
+      args TEXT NOT NULL,
+      cwd TEXT,
+      enabled INTEGER DEFAULT 1,
+      last_run TEXT,
+      next_run TEXT
+    );
+  `);
+
+  // Seed default host tasks
+  database
+    .prepare(
+      `INSERT OR IGNORE INTO host_tasks (id, name, schedule, command, args) VALUES (?, ?, ?, ?, ?)`,
+    )
+    .run(
+      'compact-daily',
+      'Daily conversation compaction',
+      '30 4 * * *',
+      'uv',
+      JSON.stringify([
+        'run',
+        '--project',
+        '.claude/skills/compact-history',
+        'compact-daily.py',
+      ]),
+    );
 }
 
 export function initDatabase(): void {
@@ -882,4 +927,90 @@ function migrateJsonState(): void {
       }
     }
   }
+}
+
+// --- Message summary accessors ---
+
+export function getSummaries(
+  chatJid: string,
+  sinceDate?: string,
+): Array<{ date: string; summary: string; message_count: number }> {
+  if (sinceDate) {
+    return db
+      .prepare(
+        'SELECT date, summary, message_count FROM message_summaries WHERE chat_jid = ? AND date >= ? ORDER BY date',
+      )
+      .all(chatJid, sinceDate) as Array<{
+      date: string;
+      summary: string;
+      message_count: number;
+    }>;
+  }
+  return db
+    .prepare(
+      'SELECT date, summary, message_count FROM message_summaries WHERE chat_jid = ? ORDER BY date',
+    )
+    .all(chatJid) as Array<{
+    date: string;
+    summary: string;
+    message_count: number;
+  }>;
+}
+
+export function upsertSummary(
+  chatJid: string,
+  date: string,
+  summary: string,
+  messageCount: number,
+): void {
+  db.prepare(
+    `INSERT OR REPLACE INTO message_summaries (chat_jid, date, summary, message_count, created_at)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run(chatJid, date, summary, messageCount, new Date().toISOString());
+}
+
+export function getLatestSummaryDate(chatJid: string): string | undefined {
+  const row = db
+    .prepare(
+      'SELECT MAX(date) as latest FROM message_summaries WHERE chat_jid = ?',
+    )
+    .get(chatJid) as { latest: string | null } | undefined;
+  return row?.latest ?? undefined;
+}
+
+// --- Host task accessors ---
+
+export interface HostTask {
+  id: string;
+  name: string;
+  schedule: string;
+  command: string;
+  args: string;
+  cwd: string | null;
+  enabled: number;
+  last_run: string | null;
+  next_run: string | null;
+}
+
+export function getHostTasks(): HostTask[] {
+  return db
+    .prepare('SELECT * FROM host_tasks WHERE enabled = 1')
+    .all() as HostTask[];
+}
+
+export function updateHostTaskRun(
+  id: string,
+  lastRun: string,
+  nextRun: string,
+): void {
+  db.prepare(
+    'UPDATE host_tasks SET last_run = ?, next_run = ? WHERE id = ?',
+  ).run(lastRun, nextRun, id);
+}
+
+export function updateHostTaskNextRun(id: string, nextRun: string): void {
+  db.prepare('UPDATE host_tasks SET next_run = ? WHERE id = ?').run(
+    nextRun,
+    id,
+  );
 }
