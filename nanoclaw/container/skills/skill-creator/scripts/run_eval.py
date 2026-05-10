@@ -42,7 +42,7 @@ def run_single_query(
 ) -> bool:
     """Run a single query and return whether the skill was triggered.
 
-    Creates a skill file in .gemini/skills/ so it appears in the agent's
+    Creates a skill file in .opencode/skills/ so it appears in the agent's
     available_skills list, then runs `gemini -p` with the raw query.
     Uses --output-format stream-json to detect triggering from
     stream events.

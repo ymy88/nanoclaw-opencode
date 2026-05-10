@@ -12,12 +12,12 @@ You MUST complete BOTH steps. The image is NOT delivered to the user until step 
 
 **Text-to-image** (generate from scratch):
 ```bash
-python3 /home/node/.gemini/skills/generate-image/scripts/generate_image.py "detailed prompt here" -o /workspace/group/image.png
+python3 /home/bun/.opencode/skills/generate-image/scripts/generate_image.py "detailed prompt here" -o /workspace/group/image.png
 ```
 
 **With reference image** (use an existing image as input):
 ```bash
-python3 /home/node/.gemini/skills/generate-image/scripts/generate_image.py "prompt describing what to generate" -i /workspace/group/reference.png -o /workspace/group/image.png
+python3 /home/bun/.opencode/skills/generate-image/scripts/generate_image.py "prompt describing what to generate" -i /workspace/group/reference.png -o /workspace/group/image.png
 ```
 
 Use `-i` when:
