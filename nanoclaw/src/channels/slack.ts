@@ -234,6 +234,7 @@ export class SlackChannel implements Channel {
 
   async connect(): Promise<void> {
     await this.app.start();
+    this.attachPingPongLogging();
 
     // Get bot's own user ID for self-message detection.
     // Resolve this BEFORE setting connected=true so that messages arriving
@@ -276,70 +277,91 @@ export class SlackChannel implements Channel {
     return receiver.receiver?.client?.websocket ?? null;
   }
 
+  private getRawWebSocket(): any | null {
+    const receiver = this.app as unknown as {
+      receiver?: {
+        client?: {
+          websocket?: {
+            websocket?: { ping: Function; on: Function; readyState: number };
+          };
+        };
+      };
+    };
+    return receiver.receiver?.client?.websocket?.websocket ?? null;
+  }
+
+  private attachPingPongLogging(): void {
+    // Ping/pong logging disabled — enable for debugging by uncommenting below
+    // const ws = this.getRawWebSocket();
+    // if (!ws) return;
+    // ws.on('ping', () => { logger.info('WebSocket received ping from Slack'); });
+    // ws.on('pong', () => { logger.info('WebSocket received pong from Slack'); });
+  }
+
+  /**
+   * Send a WebSocket ping and return whether a pong was received.
+   * Used by the health endpoint to verify the connection is truly alive.
+   */
+  async pingWebSocket(timeoutMs = 10_000): Promise<{ ok: boolean; latencyMs?: number; error?: string }> {
+    const ws = this.getRawWebSocket();
+    if (!ws) return { ok: false, error: 'raw WebSocket not available' };
+    if (ws.readyState !== 1) return { ok: false, error: `readyState=${ws.readyState}` };
+
+    const start = Date.now();
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        resolve({ ok: false, error: 'pong timeout' });
+      }, timeoutMs);
+
+      ws.once('pong', () => {
+        clearTimeout(timeout);
+        resolve({ ok: true, latencyMs: Date.now() - start });
+      });
+
+      try {
+        ws.ping();
+      } catch (err) {
+        clearTimeout(timeout);
+        resolve({ ok: false, error: `ping failed: ${err}` });
+      }
+    });
+  }
+
   private startHealthCheck(): void {
     if (this.healthCheckTimer) return;
     const HEALTH_CHECK_INTERVAL = 30_000; // 30 seconds
+    const NETWORK_CHECK_INTERVAL = 60_000; // wait between retries when network is down
 
-    this.healthCheckTimer = setInterval(() => {
+    let waitingForNetwork = false;
+
+    this.healthCheckTimer = setInterval(async () => {
       const ws = this.getWebSocket();
-      if (ws && !ws.isActive() && !this.reconnecting) {
-        logger.warn('Slack WebSocket is not active, reconnecting');
+      if (!ws || ws.isActive() || this.reconnecting || waitingForNetwork) return;
+
+      // WebSocket is dead — check if it's a network issue or Slack issue
+      try {
+        await fetch('https://slack.com/api/api.test', { signal: AbortSignal.timeout(5000) });
+        // Network is fine, Slack API reachable — the WebSocket session is stale
+        logger.error('Slack WebSocket is not active but network is OK, restarting process');
+        process.exit(1);
+      } catch {
+        // Network is down — wait for it to come back
+        logger.warn('Slack WebSocket is not active and network is down, waiting');
         this.connected = false;
-        this.scheduleReconnect();
+        waitingForNetwork = true;
+        const waitForNetwork = setInterval(async () => {
+          try {
+            await fetch('https://slack.com/api/api.test', { signal: AbortSignal.timeout(5000) });
+            // Network is back — restart process to get a fresh connection
+            logger.info('Network restored, restarting process');
+            process.exit(1);
+          } catch {
+            logger.warn('Network still down, waiting');
+          }
+        }, NETWORK_CHECK_INTERVAL);
+        waitForNetwork.unref();
       }
     }, HEALTH_CHECK_INTERVAL);
-  }
-
-  private scheduleReconnect(): void {
-    if (this.reconnecting) return;
-    this.reconnecting = true;
-    if (this.healthCheckTimer) {
-      clearInterval(this.healthCheckTimer);
-      this.healthCheckTimer = null;
-    }
-
-    const BASE_DELAY = 5_000;
-    const MAX_DELAY = 5 * 60_000; // cap at 5 minutes between retries
-    let attempt = 0;
-
-    const tryReconnect = async () => {
-      attempt++;
-      const delay = Math.min(BASE_DELAY * Math.pow(2, attempt - 1), MAX_DELAY);
-      logger.info({ attempt, nextRetryMs: delay }, 'Attempting Slack reconnection');
-      try {
-        await this.app.stop();
-      } catch {
-        /* ignore stop errors */
-      }
-      try {
-        const CONNECT_TIMEOUT = 30_000;
-        this.app = new App({
-          token: this.botToken,
-          appToken: this.appToken,
-          socketMode: true,
-          logLevel: LogLevel.ERROR,
-        });
-        this.setupEventHandlers();
-        await Promise.race([
-          this.app.start(),
-          new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('app.start() timed out')), CONNECT_TIMEOUT),
-          ),
-        ]);
-        const auth = await this.app.client.auth.test();
-        this.botUserId = auth.user_id as string;
-        this.connected = true;
-        this.reconnecting = false;
-        this.startHealthCheck();
-        await this.flushOutgoingQueue();
-        logger.info({ attempt }, 'Slack reconnected');
-      } catch (err) {
-        logger.warn({ err, attempt, nextRetryMs: delay }, 'Slack reconnection failed, retrying');
-        setTimeout(tryReconnect, delay);
-      }
-    };
-
-    setTimeout(tryReconnect, BASE_DELAY);
   }
 
   async sendMessage(

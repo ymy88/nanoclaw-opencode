@@ -489,6 +489,24 @@ async function startMessageLoop(): Promise<void> {
   messageLoopRunning = true;
 
   startHostTaskScheduler();
+  // Health check HTTP server
+  const HEALTH_PORT = 3847;
+  Bun.serve({
+    port: HEALTH_PORT,
+    async fetch(req) {
+      const url = new URL(req.url);
+      if (url.pathname === '/health/slack-ping') {
+        if (!slack) {
+          return Response.json({ ok: false, error: 'Slack not initialized' });
+        }
+        const result = await slack.pingWebSocket();
+        return Response.json({ ...result, timestamp: new Date().toISOString() });
+      }
+      return new Response('Not Found', { status: 404 });
+    },
+  });
+  logger.info({ port: HEALTH_PORT }, 'Health check server started');
+
   logger.info(`NanoClaw running (trigger: @${ASSISTANT_NAME})`);
 
   while (true) {

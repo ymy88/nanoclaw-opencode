@@ -8,6 +8,8 @@ When making code changes, always describe what the existing code does before pro
 
 Never assume the situation. Never use words like "likely", "probably", "might be", "could be". For every statement you output, you must find evidence first — read the code, check the logs, verify the data. If you don't have evidence, say "I don't know" and go find it.
 
+Always use `logger.info` for logging. Never use `logger.debug` — the default log level is `info`, so `debug` logs are silently dropped.
+
 ## Repository Structure
 
 | Directory | Project | Language | Purpose |

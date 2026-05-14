@@ -53,8 +53,20 @@ export function startHostTaskScheduler(): void {
         `${task.id}-${now.toISOString().replace(/[:.]/g, '-')}.log`,
       );
 
+      const env = {
+        ...process.env,
+        PATH: [
+          process.env.PATH,
+          '/opt/homebrew/bin',
+          '/usr/local/bin',
+          `${process.env.HOME}/.local/bin`,
+          `${process.env.HOME}/.bun/bin`,
+        ].filter(Boolean).join(':'),
+      };
+
       const child = spawn(task.command, args, {
         cwd,
+        env,
         stdio: ['ignore', 'pipe', 'pipe'],
       });
 
