@@ -33,6 +33,7 @@ import {
   getAllTasks,
   getMessagesSince,
   getMessagesSinceForThread,
+  getLastMessagePerChannel,
   getNewMessages,
   getRecentMessages,
   getRecentTaskOutput,
@@ -509,6 +510,27 @@ async function startMessageLoop(): Promise<void> {
 
   logger.info(`NanoClaw running (trigger: @${ASSISTANT_NAME})`);
 
+  // Reprocess unanswered messages from before restart.
+  // lastAgentTimestamp advances to the user message timestamp before the agent
+  // responds, so we can't rely on it. Instead, check if the last message in
+  // each channel is from a user — if so, roll back lastAgentTimestamp to before
+  // that message so processGroupMessages finds it.
+  const lastMessages = getLastMessagePerChannel(Object.keys(registeredGroups));
+  for (const last of lastMessages) {
+    if (!last.is_bot_message) {
+      const queueKey = last.chat_jid;
+      const rollbackTs = new Date(new Date(last.timestamp).getTime() - 1).toISOString();
+      const group = registeredGroups[last.chat_jid];
+      logger.info(
+        { group: group?.folder, jid: last.chat_jid, timestamp: last.timestamp },
+        'Found unanswered message, rolling back agent cursor to reprocess',
+      );
+      lastAgentTimestamp[queueKey] = rollbackTs;
+      saveState();
+      queue.enqueueMessageCheck(last.chat_jid);
+    }
+  }
+
   while (true) {
     // Check for session reset signals from compact-history script
     for (const group of Object.values(registeredGroups)) {
@@ -672,7 +694,22 @@ async function startMessageLoop(): Promise<void> {
                 '--days',
                 String(limit),
               ],
-              { cwd: skillDir, stdio: 'pipe' },
+              {
+                cwd: skillDir,
+                stdio: 'pipe',
+                env: {
+                  ...process.env,
+                  PATH: [
+                    process.env.PATH,
+                    '/opt/homebrew/bin',
+                    '/usr/local/bin',
+                    `${process.env.HOME}/.local/bin`,
+                  ].filter(Boolean).join(':'),
+                  ...(process.env.GOOGLE_APPLICATION_CREDENTIALS
+                    ? { GOOGLE_APPLICATION_CREDENTIALS: path.resolve(process.env.GOOGLE_APPLICATION_CREDENTIALS) }
+                    : {}),
+                },
+              },
             );
 
             let stderr = '';
@@ -858,23 +895,47 @@ async function main(): Promise<void> {
   }
 
   if (hasSlackTokens) {
-    slack = new SlackChannel({
-      ...channelOpts,
-      onAutoRegister: (jid, channelName, _channelId) => {
-        const folder = channelName
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, '-')
-          .replace(/^-+|-+$/g, '');
-        registerGroup(jid, {
-          name: channelName,
-          folder,
-          trigger: `@${ASSISTANT_NAME}`,
-          added_at: new Date().toISOString(),
-          requiresTrigger: true,
-          alwaysReplyInThread: true,
-        });
-      },
-    });
+    const createSlackChannel = (): SlackChannel =>
+      new SlackChannel({
+        ...channelOpts,
+        onAutoRegister: (jid, channelName, _channelId) => {
+          const folder = channelName
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/^-+|-+$/g, '');
+          registerGroup(jid, {
+            name: channelName,
+            folder,
+            trigger: `@${ASSISTANT_NAME}`,
+            added_at: new Date().toISOString(),
+            requiresTrigger: true,
+            alwaysReplyInThread: true,
+          });
+        },
+        onDead: () => {
+          logger.info('Slack connection dead, re-creating SlackChannel');
+          const oldChannel = slack;
+          const newChannel = createSlackChannel();
+          logger.info('New SlackChannel created, connecting...');
+          newChannel
+            .connect()
+            .then(() => {
+              const idx = oldChannel ? channels.indexOf(oldChannel) : -1;
+              if (idx >= 0) channels[idx] = newChannel;
+              slack = newChannel;
+              logger.info('SlackChannel re-created and connected');
+            })
+            .catch((err) => {
+              logger.error(
+                { err },
+                'Failed to re-create SlackChannel, restarting process',
+              );
+              process.exit(1);
+            });
+        },
+      });
+
+    slack = createSlackChannel();
     channels.push(slack);
     await slack.connect();
   }

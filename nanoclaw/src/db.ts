@@ -539,6 +539,25 @@ export function getRecentMessages(
   return rows.reverse();
 }
 
+export function getLastMessagePerChannel(
+  jids: string[],
+): Array<{ chat_jid: string; is_bot_message: number; timestamp: string }> {
+  if (jids.length === 0) return [];
+  const placeholders = jids.map(() => '?').join(',');
+  return db
+    .prepare(
+      `SELECT m.chat_jid, m.is_bot_message, m.timestamp
+       FROM messages m
+       INNER JOIN (
+         SELECT chat_jid, MAX(timestamp) as max_ts
+         FROM messages
+         WHERE chat_jid IN (${placeholders}) AND content != '' AND content IS NOT NULL
+         GROUP BY chat_jid
+       ) latest ON m.chat_jid = latest.chat_jid AND m.timestamp = latest.max_ts`,
+    )
+    .all(...jids) as Array<{ chat_jid: string; is_bot_message: number; timestamp: string }>;
+}
+
 export function createTask(
   task: Omit<ScheduledTask, 'last_run' | 'last_result'>,
 ): void {

@@ -34,6 +34,7 @@ export interface SlackChannelOpts {
     channelName: string,
     channelId: string,
   ) => void;
+  onDead?: () => void;
 }
 
 export class SlackChannel implements Channel {
@@ -342,19 +343,23 @@ export class SlackChannel implements Channel {
       try {
         await fetch('https://slack.com/api/api.test', { signal: AbortSignal.timeout(5000) });
         // Network is fine, Slack API reachable — the WebSocket session is stale
-        logger.error('Slack WebSocket is not active but network is OK, restarting process');
-        process.exit(1);
+        logger.error('Slack WebSocket is not active but network is OK, requesting re-creation');
+        clearInterval(this.healthCheckTimer!);
+        this.healthCheckTimer = null;
+        this.opts.onDead?.();
       } catch {
         // Network is down — wait for it to come back
         logger.warn('Slack WebSocket is not active and network is down, waiting');
         this.connected = false;
         waitingForNetwork = true;
+        clearInterval(this.healthCheckTimer!);
+        this.healthCheckTimer = null;
         const waitForNetwork = setInterval(async () => {
           try {
             await fetch('https://slack.com/api/api.test', { signal: AbortSignal.timeout(5000) });
-            // Network is back — restart process to get a fresh connection
-            logger.info('Network restored, restarting process');
-            process.exit(1);
+            clearInterval(waitForNetwork);
+            logger.info('Network restored, requesting re-creation');
+            this.opts.onDead?.();
           } catch {
             logger.warn('Network still down, waiting');
           }
