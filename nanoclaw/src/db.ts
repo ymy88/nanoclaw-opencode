@@ -240,7 +240,7 @@ function createSchema(database: Database): void {
         'run',
         '--project',
         '.claude/skills/compact-history',
-        'compact-daily.py',
+        '.claude/skills/compact-history/compact-daily.py',
       ]),
     );
 }
