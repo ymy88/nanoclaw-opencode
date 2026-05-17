@@ -88,10 +88,13 @@ def get_unsummarized_dates(db_path: Path, chat_jid: str) -> list[str]:
         return []
 
     now = datetime.now(LOCAL_TZ)
-    # Yesterday's date (the last complete day)
-    yesterday = (now - timedelta(hours=DAY_START_HOUR)).strftime("%Y-%m-%d")
-    if now.hour < DAY_START_HOUR:
-        yesterday = (now - timedelta(days=1, hours=DAY_START_HOUR)).strftime("%Y-%m-%d")
+    # Yesterday = last complete day. A "day" starts at 4 AM local.
+    # If now is May 15 20:00, today is May 15, yesterday is May 14.
+    # If now is May 16 03:00, today is still May 15 (before 4 AM), yesterday is May 14.
+    if now.hour >= DAY_START_HOUR:
+        yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    else:
+        yesterday = (now - timedelta(days=2)).strftime("%Y-%m-%d")
 
     start_date = latest if latest else earliest
     if latest:
