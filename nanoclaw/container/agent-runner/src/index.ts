@@ -265,6 +265,7 @@ export const mcp__nanoclaw__register_group = tools.mcp__nanoclaw__register_group
     agent: {
       build: {
         prompt: instructions || 'You are an AI assistant. Use the tools available to you to help the user.',
+        permission: 'allow',
       },
     },
   };

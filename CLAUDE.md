@@ -10,6 +10,8 @@ Never assume the situation. Never use words like "likely", "probably", "might be
 
 Always use `logger.info` for logging. Never use `logger.debug` — the default log level is `info`, so `debug` logs are silently dropped.
 
+Never delete or modify data in databases (SQLite, OpenCode DB, etc.) without the user explicitly asking you to. When the user asks "how" to do something, answer with instructions — don't execute the action yourself.
+
 ## Repository Structure
 
 | Directory | Project | Language | Purpose |

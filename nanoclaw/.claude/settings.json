@@ -2,11 +2,30 @@
   "permissions": {
     "allow": [
       "Write(tmp/*)",
-      "Bash(sqlite3:*)",
       "Bash(docker ps:*)",
+      "Bash(docker logs:*)",
       "Bash(pgrep:*)",
       "Bash(git status:*)",
-      "Bash(ls:*)"
+      "Bash(git log:*)",
+      "Bash(git diff:*)",
+      "Bash(ls:*)",
+      "Bash(tail:*)",
+      "Bash(grep:*)",
+      "Bash(cat:*)",
+      "Bash(head:*)",
+      "Bash(find:*)",
+      "Bash(curl:*)",
+      "Bash(stat:*)",
+      "Bash(wc:*)",
+      "Bash(python3 -c:*)"
+    ],
+    "deny": [
+      "Bash(sqlite3 * DELETE:*)",
+      "Bash(sqlite3 * DROP:*)",
+      "Bash(sqlite3 * UPDATE:*)",
+      "Bash(sqlite3 * INSERT:*)",
+      "Bash(rm :*)",
+      "Bash(launchctl:*)"
     ]
   }
 }
