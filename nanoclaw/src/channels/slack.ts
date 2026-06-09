@@ -20,6 +20,19 @@ import {
 // Messages exceeding this are split into sequential chunks.
 const MAX_MESSAGE_LENGTH = 4000;
 
+// An outbound item awaiting delivery. Queued when the connection is down (or a
+// send fails) and flushed on (re)connect. Images are queued too so a selfie
+// sent during an outage is delivered on recovery rather than lost.
+type QueuedOutbound =
+  | { kind: 'text'; jid: string; text: string; threadTs?: string }
+  | {
+      kind: 'image';
+      jid: string;
+      filePath: string;
+      caption?: string;
+      threadTs?: string;
+    };
+
 // The message subtypes we process. Bolt delivers all subtypes via app.event('message');
 // we filter to regular messages (GenericMessageEvent, subtype undefined) and bot messages
 // (BotMessageEvent, subtype 'bot_message') so we can track our own output.
@@ -40,15 +53,15 @@ export interface SlackChannelOpts {
 export class SlackChannel implements Channel {
   name = 'slack';
 
+  // Max time to wait for the Socket Mode handshake before treating connect()
+  // as failed so the caller can retry with a fresh channel.
+  private static readonly CONNECT_TIMEOUT_MS = 30_000;
+
   private app: App;
   private botToken: string;
   private botUserId: string | undefined;
   private connected = false;
-  private outgoingQueue: Array<{
-    jid: string;
-    text: string;
-    threadTs?: string;
-  }> = [];
+  private outgoingQueue: QueuedOutbound[] = [];
   private flushing = false;
   private userNameCache = new Map<string, string>();
   private userTzCache = new Map<string, string>();
@@ -234,7 +247,15 @@ export class SlackChannel implements Channel {
   }
 
   async connect(): Promise<void> {
-    await this.app.start();
+    // Bound the Socket Mode handshake. Bolt's app.start() can hang indefinitely
+    // if the WebSocket upgrade never completes (observed during Slack-side
+    // outages). Without this, a re-creation attempt would stall forever with no
+    // 'connected' and no error for the caller's retry loop to act on.
+    await this.withTimeout(
+      this.app.start(),
+      SlackChannel.CONNECT_TIMEOUT_MS,
+      'Slack app.start() timed out',
+    );
     this.attachPingPongLogging();
 
     // Get bot's own user ID for self-message detection.
@@ -374,11 +395,10 @@ export class SlackChannel implements Channel {
     text: string,
     options?: SendMessageOptions,
   ): Promise<void> {
-    const channelId = jid.replace(/^slack:/, '');
     const threadTs = options?.threadTs;
 
     if (!this.connected) {
-      this.outgoingQueue.push({ jid, text, threadTs });
+      this.outgoingQueue.push({ kind: 'text', jid, text, threadTs });
       logger.info(
         { jid, queueSize: this.outgoingQueue.length },
         'Slack disconnected, message queued',
@@ -387,29 +407,41 @@ export class SlackChannel implements Channel {
     }
 
     try {
-      // Slack limits messages to ~4000 characters; split if needed
-      if (text.length <= MAX_MESSAGE_LENGTH) {
-        await this.app.client.chat.postMessage({
-          channel: channelId,
-          text,
-          ...(threadTs ? { thread_ts: threadTs } : {}),
-        });
-      } else {
-        for (let i = 0; i < text.length; i += MAX_MESSAGE_LENGTH) {
-          await this.app.client.chat.postMessage({
-            channel: channelId,
-            text: text.slice(i, i + MAX_MESSAGE_LENGTH),
-            ...(threadTs ? { thread_ts: threadTs } : {}),
-          });
-        }
-      }
+      await this.postText(jid, text, threadTs);
       logger.info({ jid, length: text.length, threadTs }, 'Slack message sent');
     } catch (err) {
-      this.outgoingQueue.push({ jid, text, threadTs });
+      this.outgoingQueue.push({ kind: 'text', jid, text, threadTs });
       logger.warn(
         { jid, err, queueSize: this.outgoingQueue.length },
         'Failed to send Slack message, queued',
       );
+    }
+  }
+
+  /**
+   * Post text to Slack, splitting into ~4000-char chunks (Slack's per-message
+   * limit). Shared by sendMessage and the queue flush so both honor the limit.
+   */
+  private async postText(
+    jid: string,
+    text: string,
+    threadTs?: string,
+  ): Promise<void> {
+    const channelId = jid.replace(/^slack:/, '');
+    if (text.length <= MAX_MESSAGE_LENGTH) {
+      await this.app.client.chat.postMessage({
+        channel: channelId,
+        text,
+        ...(threadTs ? { thread_ts: threadTs } : {}),
+      });
+    } else {
+      for (let i = 0; i < text.length; i += MAX_MESSAGE_LENGTH) {
+        await this.app.client.chat.postMessage({
+          channel: channelId,
+          text: text.slice(i, i + MAX_MESSAGE_LENGTH),
+          ...(threadTs ? { thread_ts: threadTs } : {}),
+        });
+      }
     }
   }
 
@@ -480,26 +512,51 @@ export class SlackChannel implements Channel {
     caption?: string,
     options?: SendMessageOptions,
   ): Promise<void> {
-    const channelId = jid.replace(/^slack:/, '');
-    const filename = filePath.split('/').pop() || 'image.png';
+    const threadTs = options?.threadTs;
+
+    if (!this.connected) {
+      this.outgoingQueue.push({ kind: 'image', jid, filePath, caption, threadTs });
+      logger.info(
+        { jid, filePath, queueSize: this.outgoingQueue.length },
+        'Slack disconnected, image queued',
+      );
+      return;
+    }
 
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const uploadArgs: any = {
-        channel_id: channelId,
-        file: filePath,
-        filename,
-        initial_comment: caption || undefined,
-      };
-      if (options?.threadTs) {
-        uploadArgs.thread_ts = options.threadTs;
-      }
-      await this.app.client.filesUploadV2(uploadArgs);
+      await this.postImage(jid, filePath, caption, threadTs);
       logger.info({ jid, filePath }, 'Slack image sent');
     } catch (err) {
-      logger.error({ jid, filePath, err }, 'Failed to send Slack image');
-      throw err;
+      this.outgoingQueue.push({ kind: 'image', jid, filePath, caption, threadTs });
+      logger.warn(
+        { jid, filePath, err, queueSize: this.outgoingQueue.length },
+        'Failed to send Slack image, queued',
+      );
     }
+  }
+
+  /**
+   * Upload an image to Slack. Shared by sendImage and the queue flush.
+   */
+  private async postImage(
+    jid: string,
+    filePath: string,
+    caption?: string,
+    threadTs?: string,
+  ): Promise<void> {
+    const channelId = jid.replace(/^slack:/, '');
+    const filename = filePath.split('/').pop() || 'image.png';
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const uploadArgs: any = {
+      channel_id: channelId,
+      file: filePath,
+      filename,
+      initial_comment: caption || undefined,
+    };
+    if (threadTs) {
+      uploadArgs.thread_ts = threadTs;
+    }
+    await this.app.client.filesUploadV2(uploadArgs);
   }
 
   // Slack does not expose a typing indicator API for bots.
@@ -672,6 +729,53 @@ export class SlackChannel implements Channel {
     }
   }
 
+  /**
+   * Reject `promise` if it does not settle within `ms`. Used to bound the
+   * Socket Mode handshake so a hung connect can be retried.
+   */
+  private withTimeout<T>(
+    promise: Promise<T>,
+    ms: number,
+    message: string,
+  ): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(message)), ms);
+      promise.then(
+        (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        (err) => {
+          clearTimeout(timer);
+          reject(err);
+        },
+      );
+    });
+  }
+
+  /**
+   * Remove and return all queued outgoing messages. Used to hand the backlog
+   * off to a freshly created channel when this one is being discarded after a
+   * dead connection — otherwise the queue would be stranded on the dead
+   * instance and silently lost.
+   */
+  takePendingMessages(): QueuedOutbound[] {
+    const pending = this.outgoingQueue;
+    this.outgoingQueue = [];
+    return pending;
+  }
+
+  /**
+   * Re-queue messages handed off from a discarded channel, ahead of anything
+   * already queued, and flush immediately if connected. Preserves send order:
+   * recovered (older) messages go out before newly queued ones.
+   */
+  async restorePending(messages: QueuedOutbound[]): Promise<void> {
+    if (messages.length === 0) return;
+    this.outgoingQueue.unshift(...messages);
+    if (this.connected) await this.flushOutgoingQueue();
+  }
+
   private async flushOutgoingQueue(): Promise<void> {
     if (this.flushing || this.outgoingQueue.length === 0) return;
     this.flushing = true;
@@ -682,16 +786,34 @@ export class SlackChannel implements Channel {
       );
       while (this.outgoingQueue.length > 0) {
         const item = this.outgoingQueue.shift()!;
-        const channelId = item.jid.replace(/^slack:/, '');
-        await this.app.client.chat.postMessage({
-          channel: channelId,
-          text: item.text,
-          ...(item.threadTs ? { thread_ts: item.threadTs } : {}),
-        });
-        logger.info(
-          { jid: item.jid, length: item.text.length },
-          'Queued Slack message sent',
-        );
+        try {
+          if (item.kind === 'image') {
+            await this.postImage(
+              item.jid,
+              item.filePath,
+              item.caption,
+              item.threadTs,
+            );
+            logger.info(
+              { jid: item.jid, filePath: item.filePath },
+              'Queued Slack image sent',
+            );
+          } else {
+            await this.postText(item.jid, item.text, item.threadTs);
+            logger.info(
+              { jid: item.jid, length: item.text.length },
+              'Queued Slack message sent',
+            );
+          }
+        } catch (err) {
+          // Re-queue at the front and stop flushing; a later flush retries.
+          this.outgoingQueue.unshift(item);
+          logger.warn(
+            { jid: item.jid, err, queueSize: this.outgoingQueue.length },
+            'Failed to flush queued Slack item, will retry',
+          );
+          break;
+        }
       }
     } finally {
       this.flushing = false;

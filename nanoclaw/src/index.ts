@@ -913,27 +913,76 @@ async function main(): Promise<void> {
           });
         },
         onDead: () => {
-          logger.info('Slack connection dead, re-creating SlackChannel');
-          const oldChannel = slack;
-          const newChannel = createSlackChannel();
-          logger.info('New SlackChannel created, connecting...');
-          newChannel
-            .connect()
-            .then(() => {
-              const idx = oldChannel ? channels.indexOf(oldChannel) : -1;
-              if (idx >= 0) channels[idx] = newChannel;
-              slack = newChannel;
-              logger.info('SlackChannel re-created and connected');
-            })
-            .catch((err) => {
-              logger.error(
-                { err },
-                'Failed to re-create SlackChannel, restarting process',
-              );
-              process.exit(1);
-            });
+          void reconnectSlack();
         },
       });
+
+    // Self-healing reconnect: when a SlackChannel reports its connection dead,
+    // create a fresh channel and retry connecting with capped exponential
+    // backoff. connect() now has its own timeout, so a hung handshake surfaces
+    // as a rejection here instead of stalling forever. The dead channel's
+    // queued messages are handed off to the new channel once it connects, so
+    // nothing waiting to be delivered is lost. Only after exhausting all
+    // attempts do we exit (launchd/systemd then restarts us cleanly).
+    let slackReconnecting = false;
+    const reconnectSlack = async (): Promise<void> => {
+      if (slackReconnecting) return;
+      slackReconnecting = true;
+      logger.info('Slack connection dead, re-creating SlackChannel');
+
+      const oldChannel = slack;
+      const MAX_ATTEMPTS = 10;
+      const MAX_BACKOFF_MS = 30_000;
+      let backoff = 1_000;
+
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        const newChannel = createSlackChannel();
+        try {
+          await newChannel.connect();
+
+          // Swap in the new channel synchronously (no await between drain and
+          // swap) so messages can't be queued onto the dead channel after we
+          // drain it.
+          const pending = oldChannel?.takePendingMessages() ?? [];
+          const idx = oldChannel ? channels.indexOf(oldChannel) : -1;
+          if (idx >= 0) channels[idx] = newChannel;
+          else channels.push(newChannel);
+          slack = newChannel;
+
+          if (pending.length > 0) {
+            logger.info(
+              { count: pending.length },
+              'Handing off queued messages to new SlackChannel',
+            );
+            await newChannel.restorePending(pending);
+          }
+
+          // Release the dead channel's socket without blocking on it.
+          if (oldChannel) void oldChannel.disconnect().catch(() => {});
+
+          logger.info({ attempt }, 'SlackChannel re-created and connected');
+          slackReconnecting = false;
+          return;
+        } catch (err) {
+          // Dispose the failed attempt's app without blocking the retry.
+          void newChannel.disconnect().catch(() => {});
+          logger.error(
+            { err, attempt, maxAttempts: MAX_ATTEMPTS, backoffMs: backoff },
+            'Failed to re-create SlackChannel, will retry',
+          );
+          if (attempt < MAX_ATTEMPTS) {
+            await new Promise((resolve) => setTimeout(resolve, backoff));
+            backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
+          }
+        }
+      }
+
+      logger.error(
+        { maxAttempts: MAX_ATTEMPTS },
+        'Exhausted SlackChannel reconnect attempts, restarting process',
+      );
+      process.exit(1);
+    };
 
     slack = createSlackChannel();
     channels.push(slack);
