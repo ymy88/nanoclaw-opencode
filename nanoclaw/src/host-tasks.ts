@@ -28,7 +28,7 @@ export function startHostTaskScheduler(): void {
           const interval = CronExpressionParser.parse(task.schedule, {
             tz: TIMEZONE,
           });
-          const nextRun = interval.next().toISOString();
+          const nextRun = interval.next().toISOString()!;
           updateHostTaskNextRun(task.id, nextRun);
         } catch (err) {
           logger.error(
@@ -108,7 +108,7 @@ export function startHostTaskScheduler(): void {
         const interval = CronExpressionParser.parse(task.schedule, {
           tz: TIMEZONE,
         });
-        const nextRun = interval.next().toISOString();
+        const nextRun = interval.next().toISOString()!;
         updateHostTaskRun(task.id, now.toISOString(), nextRun);
       } catch (err) {
         logger.error(

@@ -616,7 +616,7 @@ export function updateTask(
   >,
 ): void {
   const fields: string[] = [];
-  const values: unknown[] = [];
+  const values: import('bun:sqlite').SQLQueryBindings[] = [];
 
   if (updates.prompt !== undefined) {
     fields.push('prompt = ?');
