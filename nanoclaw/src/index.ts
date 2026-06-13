@@ -940,22 +940,10 @@ async function main(): Promise<void> {
         try {
           await newChannel.connect();
 
-          // Swap in the new channel synchronously (no await between drain and
-          // swap) so messages can't be queued onto the dead channel after we
-          // drain it.
-          const pending = oldChannel?.takePendingMessages() ?? [];
           const idx = oldChannel ? channels.indexOf(oldChannel) : -1;
           if (idx >= 0) channels[idx] = newChannel;
           else channels.push(newChannel);
           slack = newChannel;
-
-          if (pending.length > 0) {
-            logger.info(
-              { count: pending.length },
-              'Handing off queued messages to new SlackChannel',
-            );
-            await newChannel.restorePending(pending);
-          }
 
           // Release the dead channel's socket without blocking on it.
           if (oldChannel) void oldChannel.disconnect().catch(() => {});

@@ -20,19 +20,6 @@ import {
 // Messages exceeding this are split into sequential chunks.
 const MAX_MESSAGE_LENGTH = 4000;
 
-// An outbound item awaiting delivery. Queued when the connection is down (or a
-// send fails) and flushed on (re)connect. Images are queued too so a selfie
-// sent during an outage is delivered on recovery rather than lost.
-type QueuedOutbound =
-  | { kind: 'text'; jid: string; text: string; threadTs?: string }
-  | {
-      kind: 'image';
-      jid: string;
-      filePath: string;
-      caption?: string;
-      threadTs?: string;
-    };
-
 // The message subtypes we process. Bolt delivers all subtypes via app.event('message');
 // we filter to regular messages (GenericMessageEvent, subtype undefined) and bot messages
 // (BotMessageEvent, subtype 'bot_message') so we can track our own output.
@@ -61,8 +48,6 @@ export class SlackChannel implements Channel {
   private botToken: string;
   private botUserId: string | undefined;
   private connected = false;
-  private outgoingQueue: QueuedOutbound[] = [];
-  private flushing = false;
   private userNameCache = new Map<string, string>();
   private userTzCache = new Map<string, string>();
 
@@ -271,9 +256,6 @@ export class SlackChannel implements Channel {
 
     this.connected = true;
 
-    // Flush any messages queued before connection
-    await this.flushOutgoingQueue();
-
     // Sync channel names on startup
     await this.syncChannelMetadata();
 
@@ -397,24 +379,11 @@ export class SlackChannel implements Channel {
   ): Promise<void> {
     const threadTs = options?.threadTs;
 
-    if (!this.connected) {
-      this.outgoingQueue.push({ kind: 'text', jid, text, threadTs });
-      logger.info(
-        { jid, queueSize: this.outgoingQueue.length },
-        'Slack disconnected, message queued',
-      );
-      return;
-    }
-
     try {
       await this.postText(jid, text, threadTs);
       logger.info({ jid, length: text.length, threadTs }, 'Slack message sent');
     } catch (err) {
-      this.outgoingQueue.push({ kind: 'text', jid, text, threadTs });
-      logger.warn(
-        { jid, err, queueSize: this.outgoingQueue.length },
-        'Failed to send Slack message, queued',
-      );
+      logger.warn({ jid, err }, 'Failed to send Slack message, dropped');
     }
   }
 
@@ -514,24 +483,11 @@ export class SlackChannel implements Channel {
   ): Promise<void> {
     const threadTs = options?.threadTs;
 
-    if (!this.connected) {
-      this.outgoingQueue.push({ kind: 'image', jid, filePath, caption, threadTs });
-      logger.info(
-        { jid, filePath, queueSize: this.outgoingQueue.length },
-        'Slack disconnected, image queued',
-      );
-      return;
-    }
-
     try {
       await this.postImage(jid, filePath, caption, threadTs);
       logger.info({ jid, filePath }, 'Slack image sent');
     } catch (err) {
-      this.outgoingQueue.push({ kind: 'image', jid, filePath, caption, threadTs });
-      logger.warn(
-        { jid, filePath, err, queueSize: this.outgoingQueue.length },
-        'Failed to send Slack image, queued',
-      );
+      logger.warn({ jid, filePath, err }, 'Failed to send Slack image, dropped');
     }
   }
 
@@ -753,70 +709,4 @@ export class SlackChannel implements Channel {
     });
   }
 
-  /**
-   * Remove and return all queued outgoing messages. Used to hand the backlog
-   * off to a freshly created channel when this one is being discarded after a
-   * dead connection — otherwise the queue would be stranded on the dead
-   * instance and silently lost.
-   */
-  takePendingMessages(): QueuedOutbound[] {
-    const pending = this.outgoingQueue;
-    this.outgoingQueue = [];
-    return pending;
-  }
-
-  /**
-   * Re-queue messages handed off from a discarded channel, ahead of anything
-   * already queued, and flush immediately if connected. Preserves send order:
-   * recovered (older) messages go out before newly queued ones.
-   */
-  async restorePending(messages: QueuedOutbound[]): Promise<void> {
-    if (messages.length === 0) return;
-    this.outgoingQueue.unshift(...messages);
-    if (this.connected) await this.flushOutgoingQueue();
-  }
-
-  private async flushOutgoingQueue(): Promise<void> {
-    if (this.flushing || this.outgoingQueue.length === 0) return;
-    this.flushing = true;
-    try {
-      logger.info(
-        { count: this.outgoingQueue.length },
-        'Flushing Slack outgoing queue',
-      );
-      while (this.outgoingQueue.length > 0) {
-        const item = this.outgoingQueue.shift()!;
-        try {
-          if (item.kind === 'image') {
-            await this.postImage(
-              item.jid,
-              item.filePath,
-              item.caption,
-              item.threadTs,
-            );
-            logger.info(
-              { jid: item.jid, filePath: item.filePath },
-              'Queued Slack image sent',
-            );
-          } else {
-            await this.postText(item.jid, item.text, item.threadTs);
-            logger.info(
-              { jid: item.jid, length: item.text.length },
-              'Queued Slack message sent',
-            );
-          }
-        } catch (err) {
-          // Re-queue at the front and stop flushing; a later flush retries.
-          this.outgoingQueue.unshift(item);
-          logger.warn(
-            { jid: item.jid, err, queueSize: this.outgoingQueue.length },
-            'Failed to flush queued Slack item, will retry',
-          );
-          break;
-        }
-      }
-    } finally {
-      this.flushing = false;
-    }
-  }
 }
