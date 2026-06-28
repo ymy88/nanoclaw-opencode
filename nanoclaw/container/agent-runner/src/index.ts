@@ -14,7 +14,7 @@
 
 import fs from 'fs';
 import path from 'path';
-import { bootstrap, AppRuntime, Session, SessionPrompt } from 'opencode';
+import { bootstrap, AppRuntime, Session, SessionPrompt, InstanceStore } from 'opencode';
 import type { IpcContext } from './nanoclaw-tools.js';
 
 interface ContainerInput {
@@ -339,7 +339,12 @@ export const mcp__nanoclaw__register_group = tools.mcp__nanoclaw__register_group
     if (!sessionId) {
       log('Creating new session...');
       const session = await AppRuntime.runPromise(
-        Session.Service.use((svc) => svc.create()),
+        InstanceStore.Service.use((store) =>
+          store.provide(
+            { directory: '/workspace/group' },
+            Session.Service.use((svc) => svc.create()),
+          ),
+        ),
       );
       sessionId = session.id;
       log(`Created new session: ${sessionId}`);
@@ -373,12 +378,17 @@ export const mcp__nanoclaw__register_group = tools.mcp__nanoclaw__register_group
         log(`Calling SessionPrompt.prompt()...`);
         const promptStart = Date.now();
         const response = await AppRuntime.runPromise(
-          SessionPrompt.Service.use((svc) =>
-            svc.prompt({
-              sessionID: sessionId!,
-              model: { providerID, modelID },
-              parts: [{ type: 'text', text: prompt }],
-            }),
+          InstanceStore.Service.use((store) =>
+            store.provide(
+              { directory: '/workspace/group' },
+              SessionPrompt.Service.use((svc) =>
+                svc.prompt({
+                  sessionID: sessionId!,
+                  model: { providerID, modelID },
+                  parts: [{ type: 'text', text: prompt }],
+                }),
+              ),
+            ),
           ),
         );
         log(`SessionPrompt.prompt() returned in ${Date.now() - promptStart}ms`);

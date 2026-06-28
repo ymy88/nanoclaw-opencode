@@ -60,6 +60,11 @@ await Bun.build({
   },
 })
 
+// NOTE: The standalone ripgrep worker build was removed when OpenCode moved
+// ripgrep into @opencode-ai/core (src/core/.../ripgrep.ts), where it runs as a
+// subprocess (process.spawn) rather than a Worker. There is no ripgrep.worker.ts
+// to bundle anymore.
+
 const pkg = JSON.parse(await Bun.file("./package.json").text())
 await Bun.write(
   path.join(outdir, "package.json"),

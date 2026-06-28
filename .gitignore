@@ -20,3 +20,6 @@ qwen-code
 
 # OpenCode - used as dependency, not checked in
 opencode/
+
+# codegraph index
+.codegraph/
