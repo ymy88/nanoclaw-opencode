@@ -222,6 +222,17 @@ async function main(): Promise<void> {
   // Load instructions for system prompt
   const instructions = loadInstructions();
 
+  // Load speaking-style + chat guidelines for per-turn tail injection.
+  // These are the always-follow directives (tone, chat rules, banned phrasings).
+  // When they sit only at the top of the system prompt they get diluted as the
+  // conversation grows, so we also re-inject them at the END of every turn's
+  // prompt — right before the model generates — where recency works for us.
+  const styleGuidelines = loadFileWithFallback('STYLE.md');
+  const appendStyle = (text: string): string =>
+    styleGuidelines
+      ? `${text}\n\n<speaking-style priority="highest">\n${styleGuidelines}\n</speaking-style>`
+      : text;
+
   // Write IPC context so the tool module can read it at import time
   const ipcContext: IpcContext = {
     chatJid: containerInput.chatJid,
@@ -325,9 +336,9 @@ export const mcp__nanoclaw__register_group = tools.mcp__nanoclaw__register_group
     log('Deleted conversation context file after loading');
   }
 
-  prompt = prependTime(prompt);
+  prompt = appendStyle(prependTime(prompt));
 
-  log(`Agent configured: provider=${providerID}, model=${modelID}, tools=9, instructions=${instructions.length} chars`);
+  log(`Agent configured: provider=${providerID}, model=${modelID}, tools=9, instructions=${instructions.length} chars, style=${styleGuidelines.length} chars (tail-injected ${styleGuidelines ? 'on' : 'off'})`);
 
   // Bootstrap OpenCode and run agent loop
   log('Calling bootstrap()...');
@@ -427,7 +438,7 @@ export const mcp__nanoclaw__register_group = tools.mcp__nanoclaw__register_group
         }
 
         log(`Got new message (${nextMessage.length} chars) after ${Date.now() - waitStart}ms wait`);
-        prompt = prependTime(nextMessage);
+        prompt = appendStyle(prependTime(nextMessage));
       }
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
