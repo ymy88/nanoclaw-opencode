@@ -17,7 +17,7 @@ Single Node.js process that connects to WhatsApp, routes messages to Claude Agen
 | `src/config.ts` | Trigger pattern, paths, intervals |
 | `src/container-runner.ts` | Spawns agent containers with mounts |
 | `src/task-scheduler.ts` | Runs scheduled tasks |
-| `src/db.ts` | SQLite operations |
+| `src/db.ts` | SQLite operations. **DB file lives at `store/messages.db`** (via `STORE_DIR` in `src/config.ts`) — NOT `data/`. It holds all tables: `sessions`, `messages`, `chats`, `message_summaries`, `host_tasks`, etc. The OpenCode session DBs are separate, per-group, at `data/sessions/{group}/.opencode/opencode/opencode-dev.db`. |
 | `groups/{name}/INSTRUCTIONS.md` | Per-group agent instructions (isolated) |
 | `groups/{name}/PERSONALITY.md` | Per-group personality definition |
 | `container/skills/agent-browser.md` | Browser automation tool (available to all agents via Bash) |
