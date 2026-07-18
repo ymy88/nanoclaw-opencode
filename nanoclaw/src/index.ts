@@ -10,6 +10,8 @@ import {
   IDLE_TIMEOUT,
   MAIN_GROUP_FOLDER,
   POLL_INTERVAL,
+  SESSION_PRUNE_ENABLED,
+  SESSION_PRUNE_KEEP_TURNS,
   SLACK_ONLY,
   TRIGGER_PATTERN,
 } from './config.js';
@@ -69,6 +71,7 @@ import {
 } from './types.js';
 import { logger } from './logger.js';
 import { readEnvFile } from './env.js';
+import { pruneActiveSessionSafe } from './session-prune.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
@@ -465,6 +468,17 @@ async function runAgent(
     if (output.newSessionId) {
       sessions[sessionKey] = output.newSessionId;
       setSession(group.folder, output.newSessionId, threadKey || undefined);
+    }
+
+    // Container has fully exited here, so the session DB is unlocked. Prune
+    // tool/reasoning noise from old turns so the session doesn't grow unbounded
+    // and hit the provider token limit. Best-effort — never blocks a reply.
+    if (SESSION_PRUNE_ENABLED && output.newSessionId) {
+      pruneActiveSessionSafe(
+        group.folder,
+        output.newSessionId,
+        SESSION_PRUNE_KEEP_TURNS,
+      );
     }
 
     if (output.status === 'error') {

@@ -12,6 +12,8 @@ const envConfig = readEnvFile([
   'IDLE_TIMEOUT',
   'OPENCODE_PROVIDER',
   'OPENCODE_MODEL',
+  'SESSION_PRUNE_ENABLED',
+  'SESSION_PRUNE_KEEP_TURNS',
 ]);
 
 export const ASSISTANT_NAME =
@@ -82,3 +84,21 @@ export const TIMEZONE =
 // from .env via readEnvFile() to keep secrets off process.env.
 export const SLACK_ONLY =
   (process.env.SLACK_ONLY || envConfig.SLACK_ONLY) === 'true';
+
+// OpenCode session "noise pruning": permanently drop tool/reasoning parts from
+// old turns so sessions don't grow unbounded and hit the provider token limit.
+// See src/session-prune.ts. Enabled by default; disable with "false".
+export const SESSION_PRUNE_ENABLED =
+  (process.env.SESSION_PRUNE_ENABLED || envConfig.SESSION_PRUNE_ENABLED) !==
+  'false';
+// Number of most-recent user turns kept fully intact (tool/reasoning preserved
+// as follow-up context). Older turns are pruned to text-only. Minimum 1.
+export const SESSION_PRUNE_KEEP_TURNS = Math.max(
+  1,
+  parseInt(
+    process.env.SESSION_PRUNE_KEEP_TURNS ||
+      envConfig.SESSION_PRUNE_KEEP_TURNS ||
+      '5',
+    10,
+  ) || 5,
+);

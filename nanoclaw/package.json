@@ -15,6 +15,7 @@
     "format:check": "prettier --check \"src/**/*.ts\"",
     "prepare": "husky",
     "setup": "tsx setup/index.ts",
+    "prune-session": "bun run src/prune-session-cli.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },
