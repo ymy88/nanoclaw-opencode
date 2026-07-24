@@ -2,6 +2,7 @@
 """Generate an image using Gemini via Vertex AI."""
 
 import argparse
+import datetime
 import os
 import sys
 
@@ -19,6 +20,28 @@ def main():
     parser.add_argument("-i", "--input-image", default=None,
                         help="Path to an input image for editing/transformation")
     args = parser.parse_args()
+
+    # Log exactly what the AI passed to this tool: prompt text, whether a
+    # reference image (-i) was supplied and if it actually exists on disk, and
+    # the output path. Written to stderr (visible in the OpenCode tool result)
+    # and appended to <output-dir>/generate-image.log, which for group calls is
+    # /workspace/group/ -> host groups/<name>/ so it survives unattended runs
+    # (e.g. the scheduled good-morning photo).
+    input_exists = bool(args.input_image) and os.path.exists(args.input_image)
+    log_line = (
+        f"[{datetime.datetime.now().isoformat(timespec='seconds')}] generate_image "
+        f"input_image={args.input_image or '(none)'} "
+        f"input_exists={input_exists} "
+        f"output={args.output} "
+        f"prompt={args.prompt!r}"
+    )
+    print(log_line, file=sys.stderr)
+    try:
+        log_path = os.path.join(os.path.dirname(args.output) or ".", "generate-image.log")
+        with open(log_path, "a") as log_file:
+            log_file.write(log_line + "\n")
+    except OSError as log_err:
+        print(f"Warning: could not write log file: {log_err}", file=sys.stderr)
 
     creds_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "/tmp/gcloud-credentials.json")
     if not os.path.exists(creds_path):
@@ -48,7 +71,7 @@ def main():
 
     client = genai.Client(vertexai=True, location="global")
     response = client.models.generate_content(
-        model="gemini-3.1-flash-image-preview",
+        model="gemini-3.1-flash-image",
         contents=contents,
         config=types.GenerateContentConfig(
             response_modalities=["IMAGE", "TEXT"],
