@@ -377,9 +377,17 @@ export const mcp__nanoclaw__register_group = tools.mcp__nanoclaw__register_group
     }
   }
 
-  // Load conversation context from compacted session
+  // Load conversation context from compacted session.
+  // Scheduled tasks are excluded: they have their own task-specific context
+  // (see the isScheduledTask block above), and letting an isolated task load
+  // this would inject unrelated group chat and — because the file is deleted
+  // after loading — steal the context meant for the next real conversation.
   const contextFilePath = '/workspace/group/.conversation-context.md';
-  if (!containerInput.sessionId && fs.existsSync(contextFilePath)) {
+  if (
+    !containerInput.sessionId &&
+    !containerInput.isScheduledTask &&
+    fs.existsSync(contextFilePath)
+  ) {
     const contextContent = fs.readFileSync(contextFilePath, 'utf-8');
     log(`Found conversation context file (${contextContent.length} chars)`);
     prompt = `<conversation-context>\n${contextContent}\n</conversation-context>\n\n${prompt}`;

@@ -63,4 +63,8 @@ Subagents only have write permission to the `tmp/` folder. When a subagent needs
 
 ## Container Build Cache
 
-The container buildkit caches the build context aggressively. `--no-cache` alone does NOT invalidate COPY steps — the builder's volume retains stale files. To force a truly clean rebuild, prune the builder then re-run `./container/build.sh`.
+For **agent-runner source / Dockerfile** changes, `./container/build.sh` needs **no prune** — buildkit invalidates the `COPY` layer on content change (verified: no-prune and pruned builds produce a byte-identical image id). Most past "rebuild didn't pick up my change / cache is stale" reports were a process artifact — checking the image before the build finished, or inspecting the still-running old container — not a Docker cache bug.
+
+**The cure is verification, not pruning:** after a build, confirm the change is in the image with `docker run --rm --entrypoint sh nanoclaw-opencode-agent:latest -c "grep -c '<string from your edit>' /app/src/index.ts"` and check the image id actually changed. See the `rebuild-container` skill for the full workflow.
+
+The OpenCode tarball in `deps/` carries a content hash in its filename (`opencode-<version>-<hash>.tgz`, written by `rebuild-sdk.sh`), so any content change yields a new filename and a guaranteed cache bust — no prune needed there either.
