@@ -177,6 +177,57 @@ function cleanResult(text: string): string {
   return result.trim();
 }
 
+// --- Prompt parts (text + image attachments) ---
+
+// Part shapes accepted by SessionPrompt.prompt (OpenCode v1 session schema:
+// TextPartInput / FilePartInput — note the field is `mime`, not `mediaType`).
+type TextPartInput = { type: 'text'; text: string };
+type FilePartInput = { type: 'file'; mime: string; filename?: string; url: string };
+type PromptPart = TextPartInput | FilePartInput;
+
+// Matches the `[file: NAME (MIME): PATH]` markers the channels inject for shared
+// files (see src/channels/slack.ts). PATH is a container-local path.
+const FILE_MARKER_RE = /\[file:\s*(.+?)\s*\(([^()]+)\):\s*([^\]]+)\]/g;
+
+// Build prompt parts from the prompt text. Image files referenced by a
+// `[file: NAME (image/*): /path]` marker are read from disk and attached as
+// real image parts (data URLs) so the model *sees* the image directly, instead
+// of relying on it choosing to call the `read` tool on the path — which some
+// models (e.g. kimi-k3) narrate ("I need to read the image") but never do,
+// producing an empty reply.
+function buildParts(text: string): PromptPart[] {
+  const parts: PromptPart[] = [{ type: 'text', text }];
+  const seen = new Set<string>();
+  let m: RegExpExecArray | null;
+  FILE_MARKER_RE.lastIndex = 0;
+  while ((m = FILE_MARKER_RE.exec(text)) !== null) {
+    const filename = m[1].trim();
+    const mime = m[2].trim();
+    const filePath = m[3].trim();
+    if (!mime.startsWith('image/')) continue;
+    if (seen.has(filePath)) continue;
+    seen.add(filePath);
+    try {
+      const buf = fs.readFileSync(filePath);
+      const url = `data:${mime};base64,${buf.toString('base64')}`;
+      parts.push({ type: 'file', mime, filename, url });
+      log(`Attached image part: ${filename} (${mime}, ${buf.length} bytes)`);
+    } catch (err) {
+      log(
+        `Failed to attach image ${filePath}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+  return parts;
+}
+
+// When the model stops without producing any user-facing reply (e.g. it only
+// emitted reasoning then `|FINAL|` with nothing after), re-prompt it a few
+// times with a nudge before giving up.
+const MAX_EMPTY_RETRIES = 2;
+const EMPTY_RETRY_NUDGE =
+  '(你刚才没有输出任何要发送给用户的内容。请现在直接给出要发给用户的回复正文;如果需要先查看图片或文件,请先调用相应工具再回复。)';
+
 // --- Main ---
 
 async function main(): Promise<void> {
@@ -385,35 +436,52 @@ export const mcp__nanoclaw__register_group = tools.mcp__nanoclaw__register_group
         };
         setTimeout(pollIpc, IPC_POLL_MS);
 
-        // Send prompt via OpenCode
-        log(`Calling SessionPrompt.prompt()...`);
-        const promptStart = Date.now();
-        const response = await AppRuntime.runPromise(
-          InstanceStore.Service.use((store) =>
-            store.provide(
-              { directory: '/workspace/group' },
-              SessionPrompt.Service.use((svc) =>
-                svc.prompt({
-                  sessionID: sessionId!,
-                  model: { providerID, modelID },
-                  parts: [{ type: 'text', text: prompt }],
-                }),
+        // Send prompt via OpenCode. Images referenced in the prompt are
+        // attached as real image parts (see buildParts). If the model returns
+        // no user-facing text, retry with a nudge up to MAX_EMPTY_RETRIES.
+        const baseParts = buildParts(prompt);
+        let cleaned = '';
+        for (let attempt = 0; attempt <= MAX_EMPTY_RETRIES; attempt++) {
+          const partsToSend: PromptPart[] =
+            attempt === 0 ? baseParts : [{ type: 'text', text: EMPTY_RETRY_NUDGE }];
+          log(
+            attempt === 0
+              ? `Calling SessionPrompt.prompt() (${baseParts.length} part(s))...`
+              : `Empty output — retry ${attempt}/${MAX_EMPTY_RETRIES}...`,
+          );
+          const promptStart = Date.now();
+          const response = await AppRuntime.runPromise(
+            InstanceStore.Service.use((store) =>
+              store.provide(
+                { directory: '/workspace/group' },
+                SessionPrompt.Service.use((svc) =>
+                  svc.prompt({
+                    sessionID: sessionId!,
+                    model: { providerID, modelID },
+                    parts: partsToSend,
+                  }),
+                ),
               ),
             ),
-          ),
-        );
-        log(`SessionPrompt.prompt() returned in ${Date.now() - promptStart}ms`);
+          );
+          log(`SessionPrompt.prompt() returned in ${Date.now() - promptStart}ms`);
+
+          // Extract text from response parts
+          const resultText = response.parts
+            .filter((p: { type: string }) => p.type === 'text')
+            .map((p: { type: string; text?: string }) => p.text || '')
+            .join('');
+
+          cleaned = cleanResult(resultText);
+          log(
+            `Query result (attempt ${attempt}): ${resultText.length} chars → cleaned: ${cleaned.length} chars`,
+          );
+
+          if (cleaned) break;
+          if (closedDuringQuery) break;
+        }
 
         ipcPolling = false;
-
-        // Extract text from response parts
-        const resultText = response.parts
-          .filter((p: { type: string }) => p.type === 'text')
-          .map((p: { type: string; text?: string }) => p.text || '')
-          .join('');
-
-        const cleaned = cleanResult(resultText);
-        log(`Query result: ${resultText.length} chars → cleaned: ${cleaned.length} chars`);
 
         writeOutput({
           status: 'success',
