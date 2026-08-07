@@ -1024,15 +1024,16 @@ async function main(): Promise<void> {
         threadTs: options?.threadTs,
       });
       if (channel.sendImage) {
-        await channel.sendImage(jid, filePath, caption, options);
-      } else {
-        // Fallback: send caption as text if channel doesn't support images
-        if (caption) await channel.sendMessage(jid, caption, options);
-        logger.warn(
-          { jid, channel: channel.name },
-          'Channel does not support sendImage, caption sent as text',
-        );
+        return await channel.sendImage(jid, filePath, caption, options);
       }
+      // Fallback: send caption as text if channel doesn't support images
+      if (caption) await channel.sendMessage(jid, caption, options);
+      logger.warn(
+        { jid, channel: channel.name },
+        'Channel does not support sendImage, caption sent as text',
+      );
+      // The image itself never went out, whatever happened to the caption.
+      return false;
     },
     registeredGroups: () => registeredGroups,
     registerGroup,

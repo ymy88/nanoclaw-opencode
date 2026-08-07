@@ -51,8 +51,8 @@ beforeEach(() => {
   setRegisteredGroup('third@g.us', THIRD_GROUP);
 
   deps = {
-    sendMessage: async () => {},
-    sendImage: async () => {},
+    sendMessage: async () => true,
+    sendImage: async () => true,
     registeredGroups: () => groups,
     registerGroup: (jid, group) => {
       groups[jid] = group;

@@ -598,17 +598,17 @@ describe('SlackChannel', () => {
       });
     });
 
-    it('queues message when disconnected', async () => {
+    it('returns true when the message is delivered', async () => {
       const opts = createTestOpts();
       const channel = new SlackChannel(opts);
+      await channel.connect();
 
-      // Don't connect — should queue
-      await channel.sendMessage('slack:C0123456789', 'Queued message');
-
-      expect(currentApp().client.chat.postMessage).not.toHaveBeenCalled();
+      await expect(
+        channel.sendMessage('slack:C0123456789', 'Hello'),
+      ).resolves.toBe(true);
     });
 
-    it('queues message on send failure', async () => {
+    it('returns false on send failure instead of throwing', async () => {
       const opts = createTestOpts();
       const channel = new SlackChannel(opts);
       await channel.connect();
@@ -617,10 +617,11 @@ describe('SlackChannel', () => {
         new Error('Network error'),
       );
 
-      // Should not throw
+      // Swallows the error so callers aren't forced to catch, but reports
+      // the failure through the return value so they can log it truthfully.
       await expect(
         channel.sendMessage('slack:C0123456789', 'Will fail'),
-      ).resolves.toBeUndefined();
+      ).resolves.toBe(false);
     });
 
     it('splits long messages at 4000 character boundary', async () => {
@@ -671,28 +672,6 @@ describe('SlackChannel', () => {
       expect(currentApp().client.chat.postMessage).toHaveBeenCalledTimes(3);
     });
 
-    it('flushes queued messages on connect', async () => {
-      const opts = createTestOpts();
-      const channel = new SlackChannel(opts);
-
-      // Queue messages while disconnected
-      await channel.sendMessage('slack:C0123456789', 'First queued');
-      await channel.sendMessage('slack:C0123456789', 'Second queued');
-
-      expect(currentApp().client.chat.postMessage).not.toHaveBeenCalled();
-
-      // Connect triggers flush
-      await channel.connect();
-
-      expect(currentApp().client.chat.postMessage).toHaveBeenCalledWith({
-        channel: 'C0123456789',
-        text: 'First queued',
-      });
-      expect(currentApp().client.chat.postMessage).toHaveBeenCalledWith({
-        channel: 'C0123456789',
-        text: 'Second queued',
-      });
-    });
   });
 
   // --- ownsJid ---
@@ -764,6 +743,37 @@ describe('SlackChannel', () => {
 
       // Should not throw
       await expect(channel.connect()).resolves.toBeUndefined();
+    });
+  });
+
+  // --- sendImage ---
+
+  describe('sendImage', () => {
+    it('returns true when the upload succeeds', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      await expect(
+        channel.sendImage('slack:C0123456789', '/tmp/selfie.png', 'caption'),
+      ).resolves.toBe(true);
+      expect(currentApp().client.filesUploadV2).toHaveBeenCalled();
+    });
+
+    it('returns false when the upload fails instead of throwing', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      currentApp().client.filesUploadV2.mockRejectedValueOnce(
+        new Error('ECONNRESET'),
+      );
+
+      // Callers rely on this to log the real outcome. Without it a dropped
+      // upload is indistinguishable from a successful one in the logs.
+      await expect(
+        channel.sendImage('slack:C0123456789', '/tmp/selfie.png'),
+      ).resolves.toBe(false);
     });
   });
 

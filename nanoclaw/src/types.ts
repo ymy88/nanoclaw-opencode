@@ -89,11 +89,13 @@ export interface TaskRunLog {
 export interface Channel {
   name: string;
   connect(): Promise<void>;
+  // Returns true if the platform confirmed delivery. False means the message
+  // did not go out — the channel logs whether it was dropped or queued for retry.
   sendMessage(
     jid: string,
     text: string,
     options?: SendMessageOptions,
-  ): Promise<void>;
+  ): Promise<boolean>;
   isConnected(): boolean;
   ownsJid(jid: string): boolean;
   disconnect(): Promise<void>;
@@ -103,12 +105,13 @@ export interface Channel {
   addReaction?(jid: string, messageId: string, emoji: string): Promise<void>;
   removeReaction?(jid: string, messageId: string, emoji: string): Promise<void>;
   // Optional: send an image file. Channels that support it implement it.
+  // Same return contract as sendMessage: true only if delivery was confirmed.
   sendImage?(
     jid: string,
     filePath: string,
     caption?: string,
     options?: SendMessageOptions,
-  ): Promise<void>;
+  ): Promise<boolean>;
 }
 
 // Callback type that channels use to deliver inbound messages

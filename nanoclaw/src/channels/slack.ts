@@ -376,14 +376,16 @@ export class SlackChannel implements Channel {
     jid: string,
     text: string,
     options?: SendMessageOptions,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const threadTs = options?.threadTs;
 
     try {
       await this.postText(jid, text, threadTs);
       logger.info({ jid, length: text.length, threadTs }, 'Slack message sent');
+      return true;
     } catch (err) {
       logger.warn({ jid, err }, 'Failed to send Slack message, dropped');
+      return false;
     }
   }
 
@@ -480,14 +482,16 @@ export class SlackChannel implements Channel {
     filePath: string,
     caption?: string,
     options?: SendMessageOptions,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const threadTs = options?.threadTs;
 
     try {
       await this.postImage(jid, filePath, caption, threadTs);
       logger.info({ jid, filePath }, 'Slack image sent');
+      return true;
     } catch (err) {
       logger.warn({ jid, filePath, err }, 'Failed to send Slack image, dropped');
+      return false;
     }
   }
 

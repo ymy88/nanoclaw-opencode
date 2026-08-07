@@ -23,17 +23,18 @@ import { logger } from './logger.js';
 import { RegisteredGroup, SendMessageOptions } from './types.js';
 
 export interface IpcDeps {
+  // Both resolve to true only when the platform confirmed delivery.
   sendMessage: (
     jid: string,
     text: string,
     options?: SendMessageOptions,
-  ) => Promise<void>;
+  ) => Promise<boolean>;
   sendImage: (
     jid: string,
     filePath: string,
     caption?: string,
     options?: SendMessageOptions,
-  ) => Promise<void>;
+  ) => Promise<boolean>;
   registeredGroups: () => Record<string, RegisteredGroup>;
   registerGroup: (jid: string, group: RegisteredGroup) => void;
   syncGroupMetadata: (force: boolean) => Promise<void>;
@@ -147,11 +148,22 @@ export function startIpcWatcher(deps: IpcDeps): void {
                     isMain ||
                     (targetGroup && targetGroup.folder === sourceGroup)
                   ) {
-                    await deps.sendMessage(data.chatJid, cleanedText, msgOptions);
-                    logger.info(
-                      { chatJid: data.chatJid, sourceGroup },
-                      'IPC message sent',
+                    const delivered = await deps.sendMessage(
+                      data.chatJid,
+                      cleanedText,
+                      msgOptions,
                     );
+                    if (delivered) {
+                      logger.info(
+                        { chatJid: data.chatJid, sourceGroup },
+                        'IPC message sent',
+                      );
+                    } else {
+                      logger.warn(
+                        { chatJid: data.chatJid, sourceGroup },
+                        'IPC message not delivered (see channel log above)',
+                      );
+                    }
                   } else {
                     logger.warn(
                       { chatJid: data.chatJid, sourceGroup },
@@ -189,16 +201,23 @@ export function startIpcWatcher(deps: IpcDeps): void {
                         'IPC image file not found on host',
                       );
                     } else {
-                      await deps.sendImage(
+                      const delivered = await deps.sendImage(
                         data.chatJid,
                         hostPath,
                         data.caption as string | undefined,
                         msgOptions,
                       );
-                      logger.info(
-                        { chatJid: data.chatJid, sourceGroup, hostPath },
-                        'IPC image sent',
-                      );
+                      if (delivered) {
+                        logger.info(
+                          { chatJid: data.chatJid, sourceGroup, hostPath },
+                          'IPC image sent',
+                        );
+                      } else {
+                        logger.warn(
+                          { chatJid: data.chatJid, sourceGroup, hostPath },
+                          'IPC image not delivered (see channel log above)',
+                        );
+                      }
                     }
                   } else {
                     logger.warn(
