@@ -167,12 +167,24 @@ function waitForIpcMessage(): Promise<string | null> {
 
 // --- Result cleaning ---
 
+// Tolerant final-marker matcher. The model is instructed to emit `|FINAL|`, but
+// it occasionally drifts the delimiters toward the XML-tag syntax it also uses
+// for <internal></internal> thinking — producing `|FINAL>`, `<FINAL>`, or the
+// fullwidth `｜FINAL｜`. Match any such variant (uppercase FINAL flanked by a
+// pipe/angle/fullwidth delimiter) so a malformed marker is still stripped and
+// never leaks to the user.
+const FINAL_MARKER = /[|<｜]\s*FINAL\s*[|>｜]?/g;
+
 function cleanResult(text: string): string {
   let result = text;
   result = result.replace(/<internal>[\s\S]*?<\/internal>/g, '');
-  const finalSeparatorIdx = result.lastIndexOf('|FINAL|');
-  if (finalSeparatorIdx !== -1) {
-    result = result.slice(finalSeparatorIdx + '|FINAL|'.length);
+  // Slice after the LAST final-marker occurrence, whatever delimiter variant it used.
+  FINAL_MARKER.lastIndex = 0;
+  let lastMatch: RegExpExecArray | null = null;
+  let m: RegExpExecArray | null;
+  while ((m = FINAL_MARKER.exec(result)) !== null) lastMatch = m;
+  if (lastMatch) {
+    result = result.slice(lastMatch.index + lastMatch[0].length);
   }
   return result.trim();
 }
